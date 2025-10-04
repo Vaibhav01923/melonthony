@@ -2,6 +2,7 @@ import { z } from "zod";
 import axios from "axios";
 import { baseProcedure, createTRPCRouter } from "../init";
 import { prisma } from "@/lib/db";
+import { equal } from "assert";
 export const appRouter = createTRPCRouter({
   hello: baseProcedure
     .input(
@@ -20,40 +21,44 @@ export const appRouter = createTRPCRouter({
         limit: z.number().default(10), // how many per page
         cursor: z.string().nullish(), // cursor for pagination
         search: z.string().optional(), // search term
+        filter: z.string().optional(), // score filter
       })
     )
     .query(async ({ input }) => {
-      const { limit, cursor, search } = input;
+      const { limit, cursor, search, filter } = input;
+      const whereClause: any = {};
 
-      let items;
       if (search) {
-        // Optimized: Filter in database
-        items = await prisma.album.findMany({
-          where: {
-            OR: [
-              { artist_clean: { contains: search, mode: "insensitive" } },
-              { album_clean: { contains: search, mode: "insensitive" } },
-              {
-                genres: {
-                  hasSome: [search], // Exact match for genres; for partial, we'd need raw SQL
-                },
-              },
-            ],
-          },
-          take: limit + 1,
-          cursor: cursor ? { id: cursor } : undefined,
-          skip: cursor ? 1 : 0,
-          orderBy: { id: "asc" },
-        });
-      } else {
-        // Normal pagination
-        items = await prisma.album.findMany({
-          take: limit + 1, // fetch one extra to check if there’s more
-          cursor: cursor ? { id: cursor } : undefined,
-          skip: cursor ? 1 : 0,
-          orderBy: { id: "asc" },
-        });
+        whereClause.OR = [
+          { artist_clean: { contains: search, mode: "insensitive" } },
+          { album_clean: { contains: search, mode: "insensitive" } },
+          { genres: { hasSome: [search] } },
+        ];
       }
+
+      if (filter !== undefined) {
+        if (filter === "NOT GOOD") {
+          whereClause.score_text = { equals: "NOT GOOD" };
+        } else if (filter === "OTHER") {
+          whereClause.AND = [
+            { score_num: null },
+            { score_text: { not: "NOT GOOD" } },
+          ];
+        } else {
+          const num = parseInt(filter);
+          if (!isNaN(num)) {
+            whereClause.score_num = { equals: num };
+          }
+        }
+      }
+
+      const items = await prisma.album.findMany({
+        where: whereClause,
+        take: limit + 1,
+        cursor: cursor ? { id: cursor } : undefined,
+        skip: cursor ? 1 : 0,
+        orderBy: { id: "asc" },
+      });
 
       let nextCursor: string | null = null;
       if (items.length > limit) {
